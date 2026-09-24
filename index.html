@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0d0f17">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Droplet">
+<link rel="manifest" href="manifest.json">
+<title>Droplet Bridge</title>
+<script src="https://unpkg.com/mqtt@5.10.4/dist/mqtt.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  body {
+    background-color: #0d0f17;
+    color: #f1f5f9;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    min-height: 100vh;
+    padding-bottom: 40px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  .app-container {
+    width: 100%;
+    max-width: 480px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  /* Header */
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    background: rgba(26, 29, 45, 0.7);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 18px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+  }
+  .header-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .droplet-icon {
+    width: 28px;
+    height: 28px;
+    background: linear-gradient(135deg, #38bdf8, #0284c7);
+    border-radius: 14px 14px 14px 4px;
+    transform: rotate(45deg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 10px rgba(56, 189, 248, 0.4);
+  }
+  .droplet-inner {
+    transform: rotate(-45deg);
+    color: #fff;
+    font-size: 14px;
+    font-weight: bold;
+  }
+  .header-title {
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+  }
+  .device-badge {
+    font-size: 10px;
+    color: #94a3b8;
+    font-family: monospace;
+  }
+  .status-badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 5px 11px;
+    border-radius: 14px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(234, 179, 8, 0.15);
+    color: #facc15;
+    border: 1px solid rgba(234, 179, 8, 0.3);
+    transition: all 0.3s ease;
+  }
+  .status-badge.connected {
+    background: rgba(34, 197, 94, 0.15);
+    color: #4ade80;
+    border-color: rgba(34, 197, 94, 0.35);
+  }
+  .status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background-color: currentColor;
+    box-shadow: 0 0 8px currentColor;
+  }
+
+  /* One-Time PWA Tip Banner */
+  .pwa-banner {
+    background: linear-gradient(135deg, rgba(56, 189, 248, 0.12), rgba(99, 102, 241, 0.12));
+    border: 1px solid rgba(56, 189, 248, 0.25);
+    border-radius: 14px;
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 12px;
+    color: #bae6fd;
+    line-height: 1.4;
+  }
+  .pwa-banner b { color: #ffffff; }
+  .pwa-close {
+    background: none;
+    border: none;
+    color: #94a3b8;
+    font-size: 16px;
+    padding: 0 4px;
+    cursor: pointer;
+    margin-left: 8px;
+  }
+
+  /* Segmented Nav */
+  .segmented-nav {
+    display: flex;
+    background: rgba(22, 26, 38, 0.8);
+    padding: 4px;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .tab-btn {
+    flex: 1;
+    padding: 10px;
+    font-size: 13.5px;
+    font-weight: 600;
+    text-align: center;
+    background: transparent;
+    color: #94a3b8;
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+  .tab-btn.active {
+    background: #38bdf8;
+    color: #0f172a;
+    box-shadow: 0 2px 12px rgba(56, 189, 248, 0.35);
+  }
+
+  /* Cards */
+  .card {
+    background: rgba(26, 30, 46, 0.65);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 18px;
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .card-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: #e2e8f0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  /* File upload button */
+  .upload-box {
+    border: 2px dashed rgba(56, 189, 248, 0.35);
+    background: rgba(56, 189, 248, 0.04);
+    border-radius: 16px;
+    padding: 26px 16px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: block;
+  }
+  .upload-box:active {
+    background: rgba(56, 189, 248, 0.1);
+    border-color: #38bdf8;
+  }
+  .upload-icon {
+    font-size: 34px;
+    margin-bottom: 8px;
+  }
+  .upload-primary {
+    font-size: 15px;
+    font-weight: 600;
+    color: #38bdf8;
+    margin-bottom: 4px;
+  }
+  .upload-secondary {
+    font-size: 11.5px;
+    color: #64748b;
+  }
+  input[type="file"] { display: none; }
+
+  /* Text input area */
+  .text-box-area {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  textarea {
+    width: 100%;
+    min-height: 80px;
+    background: rgba(15, 17, 26, 0.8);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    padding: 12px;
+    color: #f8fafc;
+    font-size: 13.5px;
+    font-family: inherit;
+    resize: none;
+    outline: none;
+  }
+  textarea:focus { border-color: #38bdf8; }
+  .btn-send {
+    padding: 11px 16px;
+    background: #38bdf8;
+    color: #0f172a;
+    font-size: 13.5px;
+    font-weight: 700;
+    border: none;
+    border-radius: 11px;
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }
+  .btn-send:active { opacity: 0.8; }
+
+  /* Status message */
+  .progress-bar {
+    width: 100%;
+    height: 6px;
+    background: rgba(255,255,255,0.1);
+    border-radius: 3px;
+    overflow: hidden;
+    display: none;
+  }
+  .progress-fill {
+    height: 100%;
+    width: 0%;
+    background: #38bdf8;
+    transition: width 0.15s ease;
+  }
+  .upload-toast {
+    display: none;
+    padding: 10px 14px;
+    background: rgba(34, 197, 94, 0.2);
+    border: 1px solid rgba(34, 197, 94, 0.4);
+    border-radius: 11px;
+    color: #4ade80;
+    font-size: 13px;
+    font-weight: 600;
+    text-align: center;
+  }
+
+  /* Shelf Items List */
+  .shelf-items-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .shelf-item-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: rgba(15, 17, 26, 0.7);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 14px;
+    padding: 10px 12px;
+    gap: 10px;
+  }
+  .item-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    overflow: hidden;
+    flex: 1;
+  }
+  .item-icon-box {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    background: rgba(56, 189, 248, 0.12);
+    border-radius: 9px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+  }
+  .item-details {
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .item-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #f8fafc;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .item-subtitle {
+    font-size: 11px;
+    color: #94a3b8;
+  }
+  .btn-action {
+    padding: 7px 12px;
+    background: rgba(255, 255, 255, 0.1);
+    color: #f1f5f9;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 9px;
+    font-size: 11.5px;
+    font-weight: 600;
+    text-decoration: none;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .btn-action:active { background: #38bdf8; color: #0f172a; }
+  .empty-shelf {
+    text-align: center;
+    padding: 30px 10px;
+    color: #64748b;
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+
+<div class="app-container">
+  <!-- Header -->
+  <div class="header">
+    <div class="header-brand">
+      <div class="droplet-icon">
+        <div class="droplet-inner">💧</div>
+      </div>
+      <div>
+        <div class="header-title">Droplet Bridge</div>
+        <div class="device-badge" id="deviceBadge">Pairing...</div>
+      </div>
+    </div>
+    <div class="status-badge" id="statusBadge">
+      <div class="status-dot"></div> <span id="statusText">Connecting...</span>
+    </div>
+  </div>
+
+  <!-- PWA Setup Tip Banner -->
+  <div class="pwa-banner" id="pwaBanner">
+    <div>📲 <b>1-Tap Setup</b>: Tap browser Share ➔ <i>Add to Home Screen</i> to share anytime without scanning QR.</div>
+    <button class="pwa-close" onclick="dismissBanner()">✕</button>
+  </div>
+
+  <!-- Segmented Navigation -->
+  <div class="segmented-nav">
+    <button id="tabSend" class="tab-btn active" onclick="switchTab('send')">📤 Send to PC</button>
+    <button id="tabShelf" class="tab-btn" onclick="switchTab('shelf')">📥 Shelf on PC</button>
+  </div>
+
+  <!-- VIEW 1: Send to PC -->
+  <div id="viewSend" class="card">
+    <div class="card-title">📁 Drop Files, Photos or Videos</div>
+    <label class="upload-box" for="fileInput">
+      <div class="upload-icon">📷</div>
+      <div class="upload-primary">Tap to Pick or Take Photo</div>
+      <div class="upload-secondary">Gallery, Files, Documents, or Camera</div>
+      <input type="file" id="fileInput" multiple onchange="uploadFilesCloud(this.files)">
+    </label>
+
+    <div class="progress-bar" id="uploadProgress">
+      <div class="progress-fill" id="progressFill"></div>
+    </div>
+    <div class="upload-toast" id="uploadToast">✓ Uploaded to PC Shelf!</div>
+
+    <div class="card-title" style="margin-top: 6px;">📝 Send Text or Web Link</div>
+    <div class="text-box-area">
+      <textarea id="textInput" placeholder="Type or paste a note, message, or web link to stash on PC..."></textarea>
+      <button class="btn-send" onclick="sendText()">Send to PC Shelf</button>
+    </div>
+  </div>
+
+  <!-- VIEW 2: Shelf Items (Download) -->
+  <div id="viewShelf" class="card" style="display: none;">
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+      <div class="card-title">📥 Stashed Items on PC</div>
+      <button class="btn-action" onclick="loadShelfItems()" style="padding: 4px 8px; font-size: 11px;">↻ Refresh</button>
+    </div>
+    <div class="shelf-items-list" id="shelfItemsList">
+      <div class="empty-shelf">Loading PC shelf...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const urlParams = new URLSearchParams(window.location.search);
+  let deviceId = urlParams.get('id') || localStorage.getItem('droplet_device_id') || 'drop-default';
+  localStorage.setItem('droplet_device_id', deviceId);
+
+  let mqttClient = null;
+  let isMqttConnected = false;
+
+  document.getElementById('deviceBadge').textContent = 'ID: ' + deviceId;
+
+  if (localStorage.getItem('droplet_pwa_banner_dismissed')) {
+    document.getElementById('pwaBanner').style.display = 'none';
+  }
+
+  function dismissBanner() {
+    localStorage.setItem('droplet_pwa_banner_dismissed', '1');
+    document.getElementById('pwaBanner').style.display = 'none';
+  }
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+
+  initMqttConnection();
+
+  function updateStatus(connected, text) {
+    const badge = document.getElementById('statusBadge');
+    const txt = document.getElementById('statusText');
+    badge.className = 'status-badge ' + (connected ? 'connected' : '');
+    txt.textContent = text;
+  }
+
+  function initMqttConnection() {
+    updateStatus(false, 'Connecting...');
+    try {
+      const brokerUrl = 'wss://broker.emqx.io:8084/mqtt';
+      const clientId = 'droplet-phone-' + deviceId + '-' + Math.random().toString(16).substring(2, 8);
+      
+      mqttClient = mqtt.connect(brokerUrl, {
+        clientId: clientId,
+        clean: true,
+        reconnectPeriod: 3000,
+        connectTimeout: 8000
+      });
+
+      mqttClient.on('connect', () => {
+        isMqttConnected = true;
+        mqttClient.subscribe('droplet/v1/' + deviceId + '/to-phone');
+        updateStatus(true, '🟢 Connected');
+      });
+
+      mqttClient.on('message', (topic, message) => {
+        try {
+          const payload = JSON.parse(message.toString());
+          handleRelayMessage(payload);
+        } catch(e) {}
+      });
+
+      mqttClient.on('offline', () => {
+        isMqttConnected = false;
+        updateStatus(false, 'Reconnecting...');
+      });
+    } catch(err) {
+      updateStatus(false, 'Connection error');
+    }
+  }
+
+  function switchTab(tab) {
+    if (tab === 'send') {
+      document.getElementById('tabSend').classList.add('active');
+      document.getElementById('tabShelf').classList.remove('active');
+      document.getElementById('viewSend').style.display = 'flex';
+      document.getElementById('viewShelf').style.display = 'none';
+    } else {
+      document.getElementById('tabSend').classList.remove('active');
+      document.getElementById('tabShelf').classList.add('active');
+      document.getElementById('viewSend').style.display = 'none';
+      document.getElementById('viewShelf').style.display = 'flex';
+      loadShelfItems();
+    }
+  }
+
+  function uploadFilesCloud(files) {
+    if (!files || files.length === 0) return;
+    if (!mqttClient || !isMqttConnected) {
+      alert('Connecting to PC... Please wait a moment.');
+      return;
+    }
+
+    const progBar = document.getElementById('uploadProgress');
+    const progFill = document.getElementById('progressFill');
+    const toast = document.getElementById('uploadToast');
+    progBar.style.display = 'block';
+    progFill.style.width = '25%';
+
+    let completed = 0;
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const arrayBuffer = e.target.result;
+        const bytes = new Uint8Array(arrayBuffer);
+        let binary = '';
+        const len = bytes.byteLength;
+        for (let j = 0; j < len; j++) {
+          binary += String.fromCharCode(bytes[j]);
+        }
+        const base64 = btoa(binary);
+
+        const packet = {
+          action: 'file',
+          name: file.name,
+          data: base64
+        };
+
+        mqttClient.publish('droplet/v1/' + deviceId + '/to-pc', JSON.stringify(packet));
+        completed++;
+        progFill.style.width = Math.round((completed / files.length) * 100) + '%';
+
+        if (completed === files.length) {
+          setTimeout(() => {
+            progBar.style.display = 'none';
+            progFill.style.width = '0%';
+            toast.textContent = `✓ Sent ${files.length} item(s) to PC Shelf!`;
+            toast.style.display = 'block';
+            document.getElementById('fileInput').value = '';
+            setTimeout(() => toast.style.display = 'none', 3000);
+          }, 300);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    }
+  }
+
+  function sendText() {
+    const textInput = document.getElementById('textInput');
+    const text = textInput.value.trim();
+    if (!text) return;
+
+    if (!mqttClient || !isMqttConnected) {
+      alert('Connecting to PC... Please wait a moment.');
+      return;
+    }
+    mqttClient.publish('droplet/v1/' + deviceId + '/to-pc', JSON.stringify({
+      action: 'text',
+      text: text
+    }));
+    textInput.value = '';
+    const toast = document.getElementById('uploadToast');
+    toast.textContent = '✓ Note sent to PC Shelf!';
+    toast.style.display = 'block';
+    setTimeout(() => toast.style.display = 'none', 3000);
+  }
+
+  function loadShelfItems() {
+    const list = document.getElementById('shelfItemsList');
+    list.innerHTML = '<div class="empty-shelf">Loading PC shelf...</div>';
+    if (mqttClient && isMqttConnected) {
+      mqttClient.publish('droplet/v1/' + deviceId + '/to-pc', JSON.stringify({ action: 'get_shelf' }));
+    } else {
+      list.innerHTML = '<div class="empty-shelf">Connecting to PC...</div>';
+    }
+  }
+
+  function renderShelfList(items) {
+    const list = document.getElementById('shelfItemsList');
+    if (!items || items.length === 0) {
+      list.innerHTML = '<div class="empty-shelf">PC Shelf is empty</div>';
+      return;
+    }
+    let html = '';
+    items.forEach(item => {
+      let icon = '📄';
+      if (item.Type === 'Image' || item.Type === 2) icon = '🖼️';
+      else if (item.Type === 'Link' || item.Type === 3) icon = '🔗';
+      else if (item.Type === 'Text' || item.Type === 1) icon = '📝';
+
+      let pinBadge = item.IsPinned ? '📌 ' : '';
+      let actionBtn = '';
+
+      if (item.Type === 'Text' || item.Type === 1 || item.Type === 'Link' || item.Type === 3) {
+        actionBtn = `<button class="btn-action" onclick="copyToPhone('${encodeURIComponent(item.TextContent || item.Title)}')">Copy</button>`;
+      } else {
+        actionBtn = `<button class="btn-action" onclick="requestCloudDownload('${item.Id}')" id="btn_dl_${item.Id}">Save</button>`;
+      }
+
+      html += `
+        <div class="shelf-item-card">
+          <div class="item-left">
+            <div class="item-icon-box">${icon}</div>
+            <div class="item-details">
+              <div class="item-title">${pinBadge}${escapeHtml(item.Title || 'Untitled')}</div>
+              <div class="item-subtitle">${escapeHtml(item.Subtitle || '')}</div>
+            </div>
+          </div>
+          ${actionBtn}
+        </div>
+      `;
+    });
+    list.innerHTML = html;
+  }
+
+  function requestCloudDownload(itemId) {
+    const btn = document.getElementById('btn_dl_' + itemId);
+    if (btn) btn.textContent = 'Fetching...';
+    if (mqttClient && isMqttConnected) {
+      mqttClient.publish('droplet/v1/' + deviceId + '/to-pc', JSON.stringify({
+        action: 'get_file',
+        id: itemId
+      }));
+    }
+  }
+
+  function handleRelayMessage(payload) {
+    if (payload.action === 'shelf_data') {
+      renderShelfList(payload.items);
+    } else if (payload.action === 'file_data') {
+      const b64 = payload.data;
+      const mime = payload.mime || 'application/octet-stream';
+      const byteCharacters = atob(b64);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = payload.name || 'download';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      const btn = document.getElementById('btn_dl_' + payload.id);
+      if (btn) btn.textContent = 'Save';
+    }
+  }
+
+  function copyToPhone(encodedText) {
+    const text = decodeURIComponent(encodedText);
+    navigator.clipboard.writeText(text).then(() => {
+      alert('✓ Copied to phone clipboard!');
+    }).catch(() => {
+      prompt('Copy text:', text);
+    });
+  }
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+</script>
+
+</body>
+</html>
