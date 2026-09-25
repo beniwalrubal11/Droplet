@@ -462,6 +462,13 @@
   let lastPongTime = 0;
   let pingInterval = null;
 
+  function updateStatus(connected, text) {
+    const badge = document.getElementById('statusBadge');
+    const txt = document.getElementById('statusText');
+    if (badge) badge.className = 'status-badge ' + (connected ? 'connected' : '');
+    if (txt) txt.textContent = text;
+  }
+
   function initMqttConnection() {
     updateStatus(false, 'Connecting...');
     try {
@@ -477,6 +484,7 @@
 
       mqttClient.on('connect', () => {
         isMqttConnected = true;
+        updateStatus(true, '🟢 Connected');
         mqttClient.subscribe('droplet/v1/' + deviceId + '/to-phone');
         if (deviceId !== 'drop-8c0db5') mqttClient.subscribe('droplet/v1/drop-8c0db5/to-phone');
         mqttClient.subscribe('droplet/v1/beniwalrubal11/to-phone');
@@ -505,6 +513,9 @@
       updateStatus(false, 'Connection error');
     }
   }
+
+  // Start connection
+  initMqttConnection();
 
   function sendPing() {
     if (!mqttClient || !isMqttConnected) return;
@@ -805,6 +816,8 @@
       const btn = document.getElementById('btn_dl_' + payload.id);
       if (btn) btn.textContent = 'Save';
     }
+  }
+
   let currentIncomingText = '';
   function showIncomingText(text, title, time) {
     currentIncomingText = text || '';
