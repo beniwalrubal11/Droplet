@@ -364,7 +364,7 @@
         <div class="device-badge" id="deviceBadge" onclick="promptChangeId()" style="cursor: pointer; text-decoration: underline;" title="Tap to change PC ID">Pairing...</div>
       </div>
     </div>
-    <div class="status-badge" id="statusBadge">
+    <div class="status-badge" id="statusBadge" onclick="promptChangeId()" style="cursor: pointer;" title="Tap to switch or enter PC ID">
       <div class="status-dot"></div> <span id="statusText">Connecting...</span>
     </div>
   </div>
@@ -401,6 +401,7 @@
     <div style="font-size: 12px; color: #94a3b8; background: rgba(0, 0, 0, 0.35); padding: 10px 14px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.08);">
       Please scan the new QR code displayed on the PC screen to connect with the updated link.
     </div>
+    <button class="btn-action" style="margin-top: 14px; width: 100%; padding: 11px; background: #38bdf8; color: #0f172a; font-weight: 700; font-size: 13px;" onclick="promptChangeId()">✏️ Enter New PC ID or Re-pair</button>
   </div>
 
   <!-- Segmented Navigation -->
@@ -512,6 +513,8 @@
 
   let isRevoked = false;
 
+  let consecutiveErrors = 0;
+
   function initMqttConnection() {
     if (isRevoked) return;
     updateStatus(false, 'Connecting to PC...');
@@ -527,17 +530,20 @@
         clientId: clientId,
         clean: true,
         reconnectPeriod: 3000,
-        connectTimeout: 7000
+        connectTimeout: 8000
       });
 
       if (connectionTimeout) clearTimeout(connectionTimeout);
       connectionTimeout = setTimeout(() => {
         if (!isMqttConnected && !isRevoked) {
-          console.warn('Broker timeout, trying next broker...');
-          brokerIdx++;
+          consecutiveErrors++;
+          console.warn('Broker timeout, consecutive errors:', consecutiveErrors);
+          if (consecutiveErrors >= 2) {
+            brokerIdx++;
+          }
           initMqttConnection();
         }
-      }, 7000);
+      }, 8000);
 
       mqttClient.on('connect', () => {
         if (isRevoked) {
@@ -546,14 +552,15 @@
         }
         if (connectionTimeout) clearTimeout(connectionTimeout);
         isMqttConnected = true;
-        updateStatus(true, '🟢 Connected');
+        consecutiveErrors = 0;
+        updateStatus(false, '🟡 Reaching PC...');
 
         // Strictly subscribe to this device's to-phone topic only
         mqttClient.subscribe('droplet/v1/' + deviceId + '/to-phone');
 
         // Immediately ping PC
         sendPing();
-        setTimeout(sendPing, 1000);
+        setTimeout(sendPing, 800);
 
         if (pingInterval) clearInterval(pingInterval);
         pingInterval = setInterval(sendPing, 3500);
@@ -570,8 +577,11 @@
         if (isRevoked) return;
         console.warn('MQTT error:', err);
         isMqttConnected = false;
-        brokerIdx++;
-        setTimeout(initMqttConnection, 2000);
+        consecutiveErrors++;
+        if (consecutiveErrors >= 3) {
+          brokerIdx++;
+        }
+        setTimeout(initMqttConnection, 2500);
       });
 
       mqttClient.on('offline', () => {
@@ -583,8 +593,11 @@
     } catch(err) {
       if (isRevoked) return;
       console.warn('Init error:', err);
-      brokerIdx++;
-      setTimeout(ensureMqttAndConnect, 2000);
+      consecutiveErrors++;
+      if (consecutiveErrors >= 3) {
+        brokerIdx++;
+      }
+      setTimeout(ensureMqttAndConnect, 2500);
     }
   }
 
