@@ -486,14 +486,16 @@
   }
 
   let isPcOnline = false;
-  let lastPongTime = 0;
-  let pingInterval = null;
-  const BROKERS = [
+  let lastPcActivityTime = 0;
+  let isRevoked = false;
+
+  const BROKER_URLS = [
+    'wss://broker.hivemq.com:8884/mqtt',
     'wss://broker.emqx.io:8084/mqtt',
-    'wss://broker.hivemq.com:8884/mqtt'
+    'wss://test.mosquitto.org:8081/mqtt'
   ];
-  let brokerIdx = 0;
-  let connectionTimeout = null;
+
+  let activeClients = [];
 
   function updateStatus(connected, text) {
     const badge = document.getElementById('statusBadge');
@@ -502,121 +504,137 @@
     if (txt) txt.textContent = text;
   }
 
+  function isAnyBrokerConnected() {
+    return activeClients.some(c => c && c.connected);
+  }
+
+  function broadcastToMqtt(topic, payloadStr) {
+    let sent = false;
+    for (const c of activeClients) {
+      if (c && c.connected) {
+        try {
+          c.publish(topic, payloadStr);
+          sent = true;
+        } catch(e) {}
+      }
+    }
+    return sent;
+  }
+
+  function markPcOnline(pcName) {
+    lastPcActivityTime = Date.now();
+    isPcOnline = true;
+    updateStatus(true, `🟢 PC Online${pcName ? ' (' + pcName + ')' : ''}`);
+  }
+
   function ensureMqttAndConnect() {
     if (typeof mqtt === 'undefined') {
       updateStatus(false, 'Loading bridge...');
       setTimeout(ensureMqttAndConnect, 250);
       return;
     }
-    initMqttConnection();
+    initAllBrokers();
   }
 
-  let isRevoked = false;
-
-  let consecutiveErrors = 0;
-
-  function initMqttConnection() {
+  function initAllBrokers() {
     if (isRevoked) return;
     updateStatus(false, 'Connecting to PC...');
-    if (mqttClient) {
-      try { mqttClient.end(true); } catch(e) {}
-    }
 
-    try {
-      const brokerUrl = BROKERS[brokerIdx % BROKERS.length];
-      const clientId = 'droplet-phone-' + deviceId + '-' + Math.random().toString(16).substring(2, 8);
-      
-      mqttClient = mqtt.connect(brokerUrl, {
-        clientId: clientId,
-        clean: true,
-        reconnectPeriod: 3000,
-        connectTimeout: 8000
-      });
+    // Close any previous connections
+    activeClients.forEach(c => {
+      try { c.end(true); } catch(e) {}
+    });
+    activeClients = [];
 
-      if (connectionTimeout) clearTimeout(connectionTimeout);
-      connectionTimeout = setTimeout(() => {
-        if (!isMqttConnected && !isRevoked) {
-          consecutiveErrors++;
-          console.warn('Broker timeout, consecutive errors:', consecutiveErrors);
-          if (consecutiveErrors >= 2) {
-            brokerIdx++;
+    BROKER_URLS.forEach((brokerUrl, idx) => {
+      try {
+        const clientId = 'drop-ph-' + deviceId + '-' + idx + '-' + Math.random().toString(16).substring(2, 6);
+        const client = mqtt.connect(brokerUrl, {
+          clientId: clientId,
+          clean: true,
+          reconnectPeriod: 3000,
+          connectTimeout: 7000
+        });
+
+        client.on('connect', () => {
+          if (isRevoked) {
+            try { client.end(true); } catch(e) {}
+            return;
           }
-          initMqttConnection();
-        }
-      }, 8000);
+          console.log('Connected to broker:', brokerUrl);
+          client.subscribe('droplet/v1/' + deviceId + '/to-phone');
 
-      mqttClient.on('connect', () => {
-        if (isRevoked) {
-          try { mqttClient.end(true); } catch(e) {}
-          return;
-        }
-        if (connectionTimeout) clearTimeout(connectionTimeout);
-        isMqttConnected = true;
-        consecutiveErrors = 0;
-        updateStatus(false, '🟡 Reaching PC...');
+          // Send immediate ping on this broker
+          try {
+            client.publish('droplet/v1/' + deviceId + '/to-pc', JSON.stringify({ action: 'ping', t: Date.now() }));
+          } catch(e) {}
 
-        // Strictly subscribe to this device's to-phone topic only
-        mqttClient.subscribe('droplet/v1/' + deviceId + '/to-phone');
+          if (!isPcOnline) {
+            updateStatus(false, '🟡 Reaching PC...');
+          }
+        });
 
-        // Immediately ping PC
-        sendPing();
-        setTimeout(sendPing, 800);
+        client.on('message', (topic, message) => {
+          try {
+            const payload = JSON.parse(message.toString());
+            handleRelayMessage(payload);
+          } catch(e) {}
+        });
 
-        if (pingInterval) clearInterval(pingInterval);
-        pingInterval = setInterval(sendPing, 3500);
-      });
+        client.on('error', (err) => {
+          console.warn('Broker error (' + brokerUrl + '):', err);
+        });
 
-      mqttClient.on('message', (topic, message) => {
-        try {
-          const payload = JSON.parse(message.toString());
-          handleRelayMessage(payload);
-        } catch(e) {}
-      });
-
-      mqttClient.on('error', (err) => {
-        if (isRevoked) return;
-        console.warn('MQTT error:', err);
-        isMqttConnected = false;
-        consecutiveErrors++;
-        if (consecutiveErrors >= 3) {
-          brokerIdx++;
-        }
-        setTimeout(initMqttConnection, 2500);
-      });
-
-      mqttClient.on('offline', () => {
-        if (isRevoked) return;
-        isMqttConnected = false;
-        isPcOnline = false;
-        updateStatus(false, 'Reconnecting...');
-      });
-    } catch(err) {
-      if (isRevoked) return;
-      console.warn('Init error:', err);
-      consecutiveErrors++;
-      if (consecutiveErrors >= 3) {
-        brokerIdx++;
+        activeClients.push(client);
+      } catch(err) {
+        console.warn('Init error for ' + brokerUrl, err);
       }
-      setTimeout(ensureMqttAndConnect, 2500);
-    }
+    });
+
+    // Fire immediate ping bursts to establish connection immediately
+    setTimeout(sendPing, 400);
+    setTimeout(sendPing, 1500);
   }
 
-  // Start connection once library is confirmed loaded
+  // Start connection once library is loaded
   ensureMqttAndConnect();
 
   function sendPing() {
-    if (isRevoked || !mqttClient || !isMqttConnected) return;
-    const pingMsg = JSON.stringify({ action: 'ping' });
-    mqttClient.publish('droplet/v1/' + deviceId + '/to-pc', pingMsg);
-
-    setTimeout(() => {
-      if (isRevoked) return;
-      if (Date.now() - lastPongTime > 6000) {
-        isPcOnline = false;
-        updateStatus(false, `🟠 PC Waiting (${deviceId})`);
-      }
-    }, 2500);
+    if (isRevoked || !isAnyBrokerConnected()) return;
+    const pingMsg = JSON.stringify({ action: 'ping', t: Date.now() });
+    broadcastToMqtt('droplet/v1/' + deviceId + '/to-pc', pingMsg);
   }
+
+  // Regular ping every 6 seconds to keep mobile socket active
+  setInterval(sendPing, 6000);
+
+  // Watchdog: only show PC Waiting if 25 seconds elapsed with zero response
+  setInterval(() => {
+    if (isRevoked) return;
+    if (lastPcActivityTime > 0 && Date.now() - lastPcActivityTime > 25000) {
+      isPcOnline = false;
+      updateStatus(false, `🟠 PC Waiting (${deviceId})`);
+    } else if (lastPcActivityTime === 0 && isAnyBrokerConnected()) {
+      updateStatus(false, `🟠 PC Waiting (${deviceId})`);
+    }
+  }, 4000);
+
+  // Phone sleep / wake and network switch handlers
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      console.log('Tab active: refreshing bridge...');
+      if (!isAnyBrokerConnected()) {
+        initAllBrokers();
+      }
+      sendPing();
+    }
+  });
+
+  window.addEventListener('online', () => {
+    console.log('Network online event');
+    initAllBrokers();
+    sendPing();
+  });
 
   function switchTab(tab) {
     if (tab === 'send') {
@@ -639,7 +657,7 @@
       alert('This connection link was reset or revoked on the PC.');
       return;
     }
-    if (!mqttClient || !isMqttConnected) {
+    if (!isAnyBrokerConnected()) {
       alert('Connecting to PC... Please wait a moment.');
       return;
     }
@@ -679,7 +697,7 @@
           data: base64Chunk
         };
 
-        mqttClient.publish('droplet/v1/' + deviceId + '/to-pc', JSON.stringify(packet));
+        broadcastToMqtt('droplet/v1/' + deviceId + '/to-pc', JSON.stringify(packet));
 
         const overallPercent = Math.round(((cIdx + 1) / totalChunks) * 100);
         progFill.style.width = overallPercent + '%';
@@ -688,7 +706,7 @@
         }
 
         if (totalChunks > 1) {
-          await new Promise(r => setTimeout(r, 12));
+          await new Promise(r => setTimeout(r, 10));
         }
       }
 
@@ -722,13 +740,15 @@
     const text = textInput.value.trim();
     if (!text) return;
 
-    if (!mqttClient || !isMqttConnected) {
+    if (!isAnyBrokerConnected()) {
       alert('Connecting to PC... Please wait a moment.');
       return;
     }
-    mqttClient.publish('droplet/v1/' + deviceId + '/to-pc', JSON.stringify({
+    const msgId = 'm_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
+    broadcastToMqtt('droplet/v1/' + deviceId + '/to-pc', JSON.stringify({
       action: 'text',
-      text: text
+      text: text,
+      msgId: msgId
     }));
     textInput.value = '';
     const toast = document.getElementById('uploadToast');
@@ -741,8 +761,8 @@
     if (isRevoked) return;
     const list = document.getElementById('shelfItemsList');
     list.innerHTML = '<div class="empty-shelf">Loading PC shelf...</div>';
-    if (mqttClient && isMqttConnected) {
-      mqttClient.publish('droplet/v1/' + deviceId + '/to-pc', JSON.stringify({ action: 'get_shelf' }));
+    if (isAnyBrokerConnected()) {
+      broadcastToMqtt('droplet/v1/' + deviceId + '/to-pc', JSON.stringify({ action: 'get_shelf' }));
     } else {
       list.innerHTML = '<div class="empty-shelf">Connecting to PC...</div>';
     }
@@ -789,8 +809,8 @@
   function requestCloudDownload(itemId) {
     const btn = document.getElementById('btn_dl_' + itemId);
     if (btn) btn.textContent = 'Fetching...';
-    if (mqttClient && isMqttConnected) {
-      mqttClient.publish('droplet/v1/' + deviceId + '/to-pc', JSON.stringify({
+    if (isAnyBrokerConnected()) {
+      broadcastToMqtt('droplet/v1/' + deviceId + '/to-pc', JSON.stringify({
         action: 'get_file',
         id: itemId
       }));
@@ -802,12 +822,11 @@
   function handleRelayMessage(payload) {
     if (payload.action === 'revoked') {
       isRevoked = true;
-      isMqttConnected = false;
       isPcOnline = false;
-      if (pingInterval) clearInterval(pingInterval);
-      if (mqttClient) {
-        try { mqttClient.end(true); } catch(e) {}
-      }
+      activeClients.forEach(c => {
+        try { c.end(true); } catch(e) {}
+      });
+      activeClients = [];
       localStorage.removeItem('droplet_device_id');
       updateStatus(false, '🔴 Revoked / Reset by PC');
 
@@ -828,11 +847,8 @@
       return;
     }
 
-    if (payload.action === 'pong') {
-      lastPongTime = Date.now();
-      isPcOnline = true;
-      const pcName = payload.name ? ` (${payload.name})` : '';
-      updateStatus(true, `🟢 PC Online${pcName}`);
+    if (payload.action === 'pong' || payload.action === 'pc_heartbeat') {
+      markPcOnline(payload.name);
     } else if (payload.action === 'incoming_text') {
       showIncomingText(payload.text, payload.title, payload.time);
     } else if (payload.action === 'text_ack') {
@@ -965,11 +981,14 @@
   }
 
   function promptChangeId() {
-    const entered = prompt('Your PC Device ID (found in Droplet Bridge QR modal on PC):', deviceId);
+    const entered = prompt('Your PC Device ID (found in Droplet Bridge QR modal on PC):\n\nLeave as is and tap OK to force-reconnect now:', deviceId);
     if (entered && entered.trim() && entered.trim() !== deviceId) {
       deviceId = entered.trim();
       localStorage.setItem('droplet_device_id', deviceId);
       location.href = window.location.pathname + '?id=' + encodeURIComponent(deviceId);
+    } else if (entered !== null) {
+      initAllBrokers();
+      sendPing();
     }
   }
 
