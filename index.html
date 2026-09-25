@@ -393,6 +393,16 @@
     </div>
   </div>
 
+  <!-- Connection Revoked / Expired Banner Card -->
+  <div id="revokedCard" class="card" style="display: none; border: 1px solid #ef4444; background: rgba(239, 68, 68, 0.16); box-shadow: 0 4px 24px rgba(239, 68, 68, 0.28); text-align: center; padding: 28px 18px;">
+    <div style="font-size: 38px; margin-bottom: 10px;">🔒</div>
+    <div style="font-size: 17px; font-weight: 700; color: #f87171; margin-bottom: 8px;">Connection Terminated / Revoked</div>
+    <div id="revokedReason" style="font-size: 13.5px; color: #cbd5e1; line-height: 1.5; margin-bottom: 18px;">This link was reset or revoked on the PC. Older connections have been completely severed.</div>
+    <div style="font-size: 12px; color: #94a3b8; background: rgba(0, 0, 0, 0.35); padding: 10px 14px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.08);">
+      Please scan the new QR code displayed on the PC screen to connect with the updated link.
+    </div>
+  </div>
+
   <!-- Segmented Navigation -->
   <div class="segmented-nav">
     <button id="tabSend" class="tab-btn active" onclick="switchTab('send')">📤 Send to PC</button>
@@ -500,7 +510,10 @@
     initMqttConnection();
   }
 
+  let isRevoked = false;
+
   function initMqttConnection() {
+    if (isRevoked) return;
     updateStatus(false, 'Connecting to PC...');
     if (mqttClient) {
       try { mqttClient.end(true); } catch(e) {}
@@ -519,7 +532,7 @@
 
       if (connectionTimeout) clearTimeout(connectionTimeout);
       connectionTimeout = setTimeout(() => {
-        if (!isMqttConnected) {
+        if (!isMqttConnected && !isRevoked) {
           console.warn('Broker timeout, trying next broker...');
           brokerIdx++;
           initMqttConnection();
@@ -527,13 +540,16 @@
       }, 7000);
 
       mqttClient.on('connect', () => {
+        if (isRevoked) {
+          try { mqttClient.end(true); } catch(e) {}
+          return;
+        }
         if (connectionTimeout) clearTimeout(connectionTimeout);
         isMqttConnected = true;
         updateStatus(true, '🟢 Connected');
 
+        // Strictly subscribe to this device's to-phone topic only
         mqttClient.subscribe('droplet/v1/' + deviceId + '/to-phone');
-        if (deviceId !== 'drop-8c0db5') mqttClient.subscribe('droplet/v1/drop-8c0db5/to-phone');
-        if (deviceId !== 'beniwalrubal11') mqttClient.subscribe('droplet/v1/beniwalrubal11/to-phone');
 
         // Immediately ping PC
         sendPing();
@@ -551,6 +567,7 @@
       });
 
       mqttClient.on('error', (err) => {
+        if (isRevoked) return;
         console.warn('MQTT error:', err);
         isMqttConnected = false;
         brokerIdx++;
@@ -558,11 +575,13 @@
       });
 
       mqttClient.on('offline', () => {
+        if (isRevoked) return;
         isMqttConnected = false;
         isPcOnline = false;
         updateStatus(false, 'Reconnecting...');
       });
     } catch(err) {
+      if (isRevoked) return;
       console.warn('Init error:', err);
       brokerIdx++;
       setTimeout(ensureMqttAndConnect, 2000);
@@ -573,17 +592,12 @@
   ensureMqttAndConnect();
 
   function sendPing() {
-    if (!mqttClient || !isMqttConnected) return;
+    if (isRevoked || !mqttClient || !isMqttConnected) return;
     const pingMsg = JSON.stringify({ action: 'ping' });
     mqttClient.publish('droplet/v1/' + deviceId + '/to-pc', pingMsg);
-    if (deviceId !== 'drop-8c0db5') {
-      mqttClient.publish('droplet/v1/drop-8c0db5/to-pc', pingMsg);
-    }
-    if (deviceId !== 'beniwalrubal11') {
-      mqttClient.publish('droplet/v1/beniwalrubal11/to-pc', pingMsg);
-    }
 
     setTimeout(() => {
+      if (isRevoked) return;
       if (Date.now() - lastPongTime > 6000) {
         isPcOnline = false;
         updateStatus(false, `🟠 PC Waiting (${deviceId})`);
@@ -608,6 +622,10 @@
 
   async function uploadFilesCloud(files) {
     if (!files || files.length === 0) return;
+    if (isRevoked) {
+      alert('This connection link was reset or revoked on the PC.');
+      return;
+    }
     if (!mqttClient || !isMqttConnected) {
       alert('Connecting to PC... Please wait a moment.');
       return;
@@ -683,6 +701,10 @@
   }
 
   function sendText() {
+    if (isRevoked) {
+      alert('This connection link was reset or revoked on the PC.');
+      return;
+    }
     const textInput = document.getElementById('textInput');
     const text = textInput.value.trim();
     if (!text) return;
@@ -703,13 +725,11 @@
   }
 
   function loadShelfItems() {
+    if (isRevoked) return;
     const list = document.getElementById('shelfItemsList');
     list.innerHTML = '<div class="empty-shelf">Loading PC shelf...</div>';
     if (mqttClient && isMqttConnected) {
       mqttClient.publish('droplet/v1/' + deviceId + '/to-pc', JSON.stringify({ action: 'get_shelf' }));
-      if (deviceId !== 'drop-8c0db5') {
-        mqttClient.publish('droplet/v1/drop-8c0db5/to-pc', JSON.stringify({ action: 'get_shelf' }));
-      }
     } else {
       list.innerHTML = '<div class="empty-shelf">Connecting to PC...</div>';
     }
@@ -767,18 +787,39 @@
   const incomingDownTransfers = {};
 
   function handleRelayMessage(payload) {
+    if (payload.action === 'revoked') {
+      isRevoked = true;
+      isMqttConnected = false;
+      isPcOnline = false;
+      if (pingInterval) clearInterval(pingInterval);
+      if (mqttClient) {
+        try { mqttClient.end(true); } catch(e) {}
+      }
+      localStorage.removeItem('droplet_device_id');
+      updateStatus(false, '🔴 Revoked / Reset by PC');
+
+      const card = document.getElementById('revokedCard');
+      const reasonEl = document.getElementById('revokedReason');
+      if (card) {
+        if (reasonEl && payload.reason) reasonEl.textContent = payload.reason;
+        card.style.display = 'block';
+      }
+      const viewSend = document.getElementById('viewSend');
+      const viewShelf = document.getElementById('viewShelf');
+      const nav = document.querySelector('.segmented-nav');
+      const inc = document.getElementById('incomingCard');
+      if (viewSend) viewSend.style.display = 'none';
+      if (viewShelf) viewShelf.style.display = 'none';
+      if (nav) nav.style.display = 'none';
+      if (inc) inc.style.display = 'none';
+      return;
+    }
+
     if (payload.action === 'pong') {
       lastPongTime = Date.now();
       isPcOnline = true;
       const pcName = payload.name ? ` (${payload.name})` : '';
       updateStatus(true, `🟢 PC Online${pcName}`);
-
-      if (payload.deviceId && payload.deviceId !== deviceId) {
-        deviceId = payload.deviceId;
-        localStorage.setItem('droplet_device_id', deviceId);
-        document.getElementById('deviceBadge').textContent = 'ID: ' + deviceId;
-        mqttClient.subscribe('droplet/v1/' + deviceId + '/to-phone');
-      }
     } else if (payload.action === 'incoming_text') {
       showIncomingText(payload.text, payload.title, payload.time);
     } else if (payload.action === 'text_ack') {
