@@ -525,6 +525,14 @@
     lastPcActivityTime = Date.now();
     isPcOnline = true;
     updateStatus(true, `🟢 PC Online${pcName ? ' (' + pcName + ')' : ''}`);
+
+    const viewShelf = document.getElementById('viewShelf');
+    const list = document.getElementById('shelfItemsList');
+    if (viewShelf && viewShelf.style.display !== 'none') {
+      if (!list || list.children.length === 0 || list.querySelector('.empty-shelf')) {
+        loadShelfItems();
+      }
+    }
   }
 
   function ensureMqttAndConnect() {
@@ -571,6 +579,11 @@
 
           if (!isPcOnline) {
             updateStatus(false, '🟡 Reaching PC...');
+          }
+
+          const viewShelf = document.getElementById('viewShelf');
+          if (viewShelf && viewShelf.style.display !== 'none') {
+            loadShelfItems();
           }
         });
 
@@ -757,14 +770,35 @@
     setTimeout(() => toast.style.display = 'none', 3000);
   }
 
+  function formatBytes(bytes) {
+    if (!bytes || bytes <= 0) return '';
+    if (bytes >= 1024 * 1024 * 1024) return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+    if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    if (bytes >= 1024) return (bytes / 1024).toFixed(0) + ' KB';
+    return bytes + ' B';
+  }
+
+  let shelfRetryTimer = null;
+
   function loadShelfItems() {
     if (isRevoked) return;
     const list = document.getElementById('shelfItemsList');
-    list.innerHTML = '<div class="empty-shelf">Loading PC shelf...</div>';
+    if (!list) return;
+
     if (isAnyBrokerConnected()) {
       broadcastToMqtt('droplet/v1/' + deviceId + '/to-pc', JSON.stringify({ action: 'get_shelf' }));
+      if (list.children.length === 0 || list.querySelector('.empty-shelf')) {
+        list.innerHTML = '<div class="empty-shelf">Loading PC shelf...</div>';
+      }
+      if (shelfRetryTimer) clearTimeout(shelfRetryTimer);
+      shelfRetryTimer = setTimeout(() => {
+        if (list && list.querySelector('.empty-shelf') && list.textContent.includes('Loading')) {
+          console.log('Auto-retrying get_shelf...');
+          broadcastToMqtt('droplet/v1/' + deviceId + '/to-pc', JSON.stringify({ action: 'get_shelf' }));
+        }
+      }, 2500);
     } else {
-      list.innerHTML = '<div class="empty-shelf">Connecting to PC...</div>';
+      list.innerHTML = '<div class="empty-shelf">Connecting to PC... <br><button class="btn-action" style="margin-top: 10px;" onclick="loadShelfItems()">↻ Tap to Retry</button></div>';
     }
   }
 
@@ -787,7 +821,17 @@
       if (item.Type === 'Text' || item.Type === 1 || item.Type === 'Link' || item.Type === 3) {
         actionBtn = `<button class="btn-action" onclick="copyToPhone('${encodeURIComponent(item.TextContent || item.Title)}')">Copy</button>`;
       } else {
-        actionBtn = `<button class="btn-action" onclick="requestCloudDownload('${item.Id}')" id="btn_dl_${item.Id}">Save</button>`;
+        const isLarge = item.FileSize && item.FileSize > 35 * 1024 * 1024;
+        if (isLarge) {
+          actionBtn = `<button class="btn-action" style="background: rgba(234, 179, 8, 0.2); border-color: rgba(234, 179, 8, 0.4); color: #facc15;" onclick="triggerDownload('${item.Id}', ${item.FileSize}, '${escapeHtml(item.LanUrl || '')}')">⚡ Gigabit LAN</button>`;
+        } else {
+          actionBtn = `<button class="btn-action" onclick="triggerDownload('${item.Id}', ${item.FileSize || 0}, '${escapeHtml(item.LanUrl || '')}')" id="btn_dl_${item.Id}">Save</button>`;
+        }
+      }
+
+      let subtitle = item.Subtitle || '';
+      if (item.FileSize && item.FileSize > 0) {
+        subtitle += ` • ${formatBytes(item.FileSize)}`;
       }
 
       html += `
@@ -796,7 +840,7 @@
             <div class="item-icon-box">${icon}</div>
             <div class="item-details">
               <div class="item-title">${pinBadge}${escapeHtml(item.Title || 'Untitled')}</div>
-              <div class="item-subtitle">${escapeHtml(item.Subtitle || '')}</div>
+              <div class="item-subtitle">${escapeHtml(subtitle)}</div>
             </div>
           </div>
           ${actionBtn}
@@ -804,6 +848,23 @@
       `;
     });
     list.innerHTML = html;
+  }
+
+  function triggerDownload(itemId, fileSize, lanUrl) {
+    const lanIp = localStorage.getItem('droplet_lan_ip');
+    const isLarge = fileSize && fileSize > 35 * 1024 * 1024;
+
+    if (isLarge) {
+      const targetUrl = lanUrl || (lanIp ? `http://${lanIp}/download?id=${itemId}` : '');
+      if (targetUrl) {
+        window.open(targetUrl, '_blank');
+        return;
+      }
+      alert(`⚡ Large File (${formatBytes(fileSize)})\n\nThis video is ${formatBytes(fileSize)}. Over mobile cellular data, cloud relay is limited to 35 MB.\n\nConnect to your Home Wi-Fi to download this file directly at Gigabit speed (150 MB/s).`);
+      return;
+    }
+
+    requestCloudDownload(itemId);
   }
 
   function requestCloudDownload(itemId) {
@@ -858,6 +919,10 @@
       setTimeout(() => toast.style.display = 'none', 3000);
     } else if (payload.action === 'shelf_data') {
       renderShelfList(payload.items);
+    } else if (payload.action === 'file_too_large') {
+      const btn = document.getElementById('btn_dl_' + payload.fileId);
+      if (btn) btn.textContent = '⚡ Gigabit LAN';
+      alert(`⚡ Large File (${formatBytes(payload.size)})\n\n${payload.message}`);
     } else if (payload.action === 'file_ack') {
       const progBar = document.getElementById('uploadProgress');
       const progFill = document.getElementById('progressFill');
