@@ -389,6 +389,7 @@
     <div class="progress-bar" id="uploadProgress">
       <div class="progress-fill" id="progressFill"></div>
     </div>
+    <div id="uploadStatusText" style="display: none; font-size: 11.5px; color: #94a3b8; text-align: center; margin-top: 4px;">Sending...</div>
     <div class="upload-toast" id="uploadToast">✓ Uploaded to PC Shelf!</div>
 
     <div class="card-title" style="margin-top: 6px;">📝 Send Text or Web Link</div>
@@ -503,7 +504,7 @@
     }
   }
 
-  function uploadFilesCloud(files) {
+  async function uploadFilesCloud(files) {
     if (!files || files.length === 0) return;
     if (!mqttClient || !isMqttConnected) {
       alert('Connecting to PC... Please wait a moment.');
@@ -513,46 +514,70 @@
     const progBar = document.getElementById('uploadProgress');
     const progFill = document.getElementById('progressFill');
     const toast = document.getElementById('uploadToast');
-    progBar.style.display = 'block';
-    progFill.style.width = '25%';
+    const statusText = document.getElementById('uploadStatusText');
 
-    let completed = 0;
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const arrayBuffer = e.target.result;
-        const bytes = new Uint8Array(arrayBuffer);
-        let binary = '';
-        const len = bytes.byteLength;
-        for (let j = 0; j < len; j++) {
-          binary += String.fromCharCode(bytes[j]);
-        }
-        const base64 = btoa(binary);
+    progBar.style.display = 'block';
+    if (statusText) statusText.style.display = 'block';
+
+    const CHUNK_SIZE = 32768; // 32 KB per chunk - safe for all MQTT brokers
+
+    for (let fIdx = 0; fIdx < files.length; fIdx++) {
+      const file = files[fIdx];
+      const transferId = 'f_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+      const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+
+      if (statusText) {
+        statusText.textContent = `Sending ${file.name} (0/${totalChunks})...`;
+      }
+
+      for (let cIdx = 0; cIdx < totalChunks; cIdx++) {
+        const start = cIdx * CHUNK_SIZE;
+        const end = Math.min(file.size, start + CHUNK_SIZE);
+        const blobSlice = file.slice(start, end);
+
+        const base64Chunk = await readBlobAsBase64(blobSlice);
 
         const packet = {
-          action: 'file',
+          action: 'file_chunk',
+          fileId: transferId,
           name: file.name,
-          data: base64
+          index: cIdx,
+          total: totalChunks,
+          data: base64Chunk
         };
 
         mqttClient.publish('droplet/v1/' + deviceId + '/to-pc', JSON.stringify(packet));
-        completed++;
-        progFill.style.width = Math.round((completed / files.length) * 100) + '%';
 
-        if (completed === files.length) {
-          setTimeout(() => {
-            progBar.style.display = 'none';
-            progFill.style.width = '0%';
-            toast.textContent = `✓ Sent ${files.length} item(s) to PC Shelf!`;
-            toast.style.display = 'block';
-            document.getElementById('fileInput').value = '';
-            setTimeout(() => toast.style.display = 'none', 3000);
-          }, 300);
+        const overallPercent = Math.round(((cIdx + 1) / totalChunks) * 100);
+        progFill.style.width = overallPercent + '%';
+        if (statusText) {
+          statusText.textContent = `Sending ${file.name} (${overallPercent}%)...`;
         }
-      };
-      reader.readAsArrayBuffer(file);
+
+        if (totalChunks > 1) {
+          await new Promise(r => setTimeout(r, 12));
+        }
+      }
+
+      if (statusText) {
+        statusText.textContent = `Saving ${file.name} on PC...`;
+      }
     }
+
+    document.getElementById('fileInput').value = '';
+  }
+
+  function readBlobAsBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result;
+        const commaIdx = dataUrl.indexOf(',');
+        resolve(commaIdx !== -1 ? dataUrl.substring(commaIdx + 1) : dataUrl);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
   }
 
   function sendText() {
@@ -634,9 +659,76 @@
     }
   }
 
+  const incomingDownTransfers = {};
+
   function handleRelayMessage(payload) {
     if (payload.action === 'shelf_data') {
       renderShelfList(payload.items);
+    } else if (payload.action === 'file_ack') {
+      const progBar = document.getElementById('uploadProgress');
+      const progFill = document.getElementById('progressFill');
+      const toast = document.getElementById('uploadToast');
+      const statusText = document.getElementById('uploadStatusText');
+
+      progFill.style.width = '100%';
+      if (statusText) statusText.style.display = 'none';
+      toast.textContent = `✓ Saved to PC Shelf: ${payload.name || 'File'}`;
+      toast.style.display = 'block';
+
+      setTimeout(() => {
+        progBar.style.display = 'none';
+        progFill.style.width = '0%';
+        setTimeout(() => toast.style.display = 'none', 3500);
+      }, 900);
+    } else if (payload.action === 'file_chunk_down') {
+      const { fileId, name, mime, index, total, data } = payload;
+      if (!incomingDownTransfers[fileId]) {
+        incomingDownTransfers[fileId] = {
+          name: name,
+          mime: mime || 'application/octet-stream',
+          total: total,
+          chunks: new Array(total)
+        };
+      }
+      const t = incomingDownTransfers[fileId];
+      t.chunks[index] = data;
+
+      const btn = document.getElementById('btn_dl_' + fileId);
+      if (btn) {
+        const pct = Math.round(((index + 1) / total) * 100);
+        btn.textContent = `${pct}%`;
+      }
+
+      let receivedCount = 0;
+      for (let i = 0; i < total; i++) {
+        if (t.chunks[i]) receivedCount++;
+      }
+
+      if (receivedCount === total) {
+        delete incomingDownTransfers[fileId];
+        if (btn) btn.textContent = 'Save';
+
+        const byteArrays = [];
+        for (let i = 0; i < total; i++) {
+          const b64 = t.chunks[i];
+          const binStr = atob(b64);
+          const u8 = new Uint8Array(binStr.length);
+          for (let j = 0; j < binStr.length; j++) {
+            u8[j] = binStr.charCodeAt(j);
+          }
+          byteArrays.push(u8);
+        }
+
+        const blob = new Blob(byteArrays, { type: t.mime });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = t.name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+      }
     } else if (payload.action === 'file_data') {
       const b64 = payload.data;
       const mime = payload.mime || 'application/octet-stream';
