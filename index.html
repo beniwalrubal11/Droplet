@@ -9,7 +9,17 @@
 <meta name="apple-mobile-web-app-title" content="Droplet">
 <link rel="manifest" href="manifest.json">
 <title>Droplet Bridge</title>
-<script src="https://unpkg.com/mqtt@5.10.4/dist/mqtt.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.10.4/mqtt.min.js"></script>
+<script>
+  if (typeof mqtt === 'undefined') {
+    document.write('<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.4/dist/mqtt.min.js"><\\/script>');
+  }
+</script>
+<script>
+  if (typeof mqtt === 'undefined') {
+    document.write('<script src="https://unpkg.com/mqtt@5.10.4/dist/mqtt.min.js"><\\/script>');
+  }
+</script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
   body {
@@ -455,12 +465,24 @@
   }
 
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    navigator.serviceWorker.register('sw.js').then((reg) => {
+      reg.update();
+    }).catch(() => {});
+
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      window.location.reload();
+    });
   }
 
   let isPcOnline = false;
   let lastPongTime = 0;
   let pingInterval = null;
+  const BROKERS = [
+    'wss://broker.emqx.io:8084/mqtt',
+    'wss://broker.hivemq.com:8884/mqtt'
+  ];
+  let brokerIdx = 0;
+  let connectionTimeout = null;
 
   function updateStatus(connected, text) {
     const badge = document.getElementById('statusBadge');
@@ -469,32 +491,56 @@
     if (txt) txt.textContent = text;
   }
 
+  function ensureMqttAndConnect() {
+    if (typeof mqtt === 'undefined') {
+      updateStatus(false, 'Loading bridge...');
+      setTimeout(ensureMqttAndConnect, 250);
+      return;
+    }
+    initMqttConnection();
+  }
+
   function initMqttConnection() {
-    updateStatus(false, 'Connecting...');
+    updateStatus(false, 'Connecting to PC...');
+    if (mqttClient) {
+      try { mqttClient.end(true); } catch(e) {}
+    }
+
     try {
-      const brokerUrl = 'wss://broker.emqx.io:8084/mqtt';
+      const brokerUrl = BROKERS[brokerIdx % BROKERS.length];
       const clientId = 'droplet-phone-' + deviceId + '-' + Math.random().toString(16).substring(2, 8);
       
       mqttClient = mqtt.connect(brokerUrl, {
         clientId: clientId,
         clean: true,
         reconnectPeriod: 3000,
-        connectTimeout: 8000
+        connectTimeout: 7000
       });
 
+      if (connectionTimeout) clearTimeout(connectionTimeout);
+      connectionTimeout = setTimeout(() => {
+        if (!isMqttConnected) {
+          console.warn('Broker timeout, trying next broker...');
+          brokerIdx++;
+          initMqttConnection();
+        }
+      }, 7000);
+
       mqttClient.on('connect', () => {
+        if (connectionTimeout) clearTimeout(connectionTimeout);
         isMqttConnected = true;
         updateStatus(true, '🟢 Connected');
+
         mqttClient.subscribe('droplet/v1/' + deviceId + '/to-phone');
         if (deviceId !== 'drop-8c0db5') mqttClient.subscribe('droplet/v1/drop-8c0db5/to-phone');
-        mqttClient.subscribe('droplet/v1/beniwalrubal11/to-phone');
+        if (deviceId !== 'beniwalrubal11') mqttClient.subscribe('droplet/v1/beniwalrubal11/to-phone');
 
-        // Immediately ping PC and request shelf
+        // Immediately ping PC
         sendPing();
         setTimeout(sendPing, 1000);
 
         if (pingInterval) clearInterval(pingInterval);
-        pingInterval = setInterval(sendPing, 4000);
+        pingInterval = setInterval(sendPing, 3500);
       });
 
       mqttClient.on('message', (topic, message) => {
@@ -504,24 +550,37 @@
         } catch(e) {}
       });
 
+      mqttClient.on('error', (err) => {
+        console.warn('MQTT error:', err);
+        isMqttConnected = false;
+        brokerIdx++;
+        setTimeout(initMqttConnection, 2000);
+      });
+
       mqttClient.on('offline', () => {
         isMqttConnected = false;
         isPcOnline = false;
         updateStatus(false, 'Reconnecting...');
       });
     } catch(err) {
-      updateStatus(false, 'Connection error');
+      console.warn('Init error:', err);
+      brokerIdx++;
+      setTimeout(ensureMqttAndConnect, 2000);
     }
   }
 
-  // Start connection
-  initMqttConnection();
+  // Start connection once library is confirmed loaded
+  ensureMqttAndConnect();
 
   function sendPing() {
     if (!mqttClient || !isMqttConnected) return;
-    mqttClient.publish('droplet/v1/' + deviceId + '/to-pc', JSON.stringify({ action: 'ping' }));
+    const pingMsg = JSON.stringify({ action: 'ping' });
+    mqttClient.publish('droplet/v1/' + deviceId + '/to-pc', pingMsg);
     if (deviceId !== 'drop-8c0db5') {
-      mqttClient.publish('droplet/v1/drop-8c0db5/to-pc', JSON.stringify({ action: 'ping' }));
+      mqttClient.publish('droplet/v1/drop-8c0db5/to-pc', pingMsg);
+    }
+    if (deviceId !== 'beniwalrubal11') {
+      mqttClient.publish('droplet/v1/beniwalrubal11/to-pc', pingMsg);
     }
 
     setTimeout(() => {
