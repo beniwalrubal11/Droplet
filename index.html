@@ -827,12 +827,7 @@
       if (item.Type === 'Text' || item.Type === 1 || item.Type === 'Link' || item.Type === 3) {
         actionBtn = `<button class="btn-action" onclick="copyToPhone('${encodeURIComponent(item.TextContent || item.Title)}')">Copy</button>`;
       } else {
-        const isLarge = item.FileSize && item.FileSize > 35 * 1024 * 1024;
-        if (isLarge) {
-          actionBtn = `<button class="btn-action" style="background: rgba(234, 179, 8, 0.2); border-color: rgba(234, 179, 8, 0.4); color: #facc15;" onclick="triggerDownload('${item.Id}', ${item.FileSize}, '${escapeHtml(item.LanUrl || '')}')">⚡ Gigabit LAN</button>`;
-        } else {
-          actionBtn = `<button class="btn-action" onclick="triggerDownload('${item.Id}', ${item.FileSize || 0}, '${escapeHtml(item.LanUrl || '')}')" id="btn_dl_${item.Id}">Save</button>`;
-        }
+        actionBtn = `<button class="btn-action" onclick="requestCloudDownload('${item.Id}')" id="btn_dl_${item.Id}">Save</button>`;
       }
 
       let subtitle = item.Subtitle || '';
@@ -1019,6 +1014,27 @@
 
     if (payload.action === 'pong' || payload.action === 'pc_heartbeat') {
       markPcOnline(payload.name);
+      if (payload.lanIp) {
+        localStorage.setItem('droplet_lan_ip', payload.lanIp);
+        const lanBanner = document.getElementById('lanBanner');
+        const lanLink = document.getElementById('lanLink');
+        if (lanBanner && lanLink) {
+          lanLink.href = 'http://' + payload.lanIp + '/?id=' + deviceId;
+          lanBanner.style.display = 'flex';
+        }
+      }
+    } else if (payload.action === 'file_buffering') {
+      const btn = document.getElementById('btn_dl_' + payload.fileId);
+      if (btn) btn.textContent = '☁️ Buffering...';
+      setItemProgress(payload.fileId, 30);
+    } else if (payload.action === 'file_cloud_url') {
+      const btn = document.getElementById('btn_dl_' + payload.fileId);
+      if (btn) btn.textContent = '✓ Ready';
+      setItemProgress(payload.fileId, 100);
+      setTimeout(() => completeItemProgress(payload.fileId, true), 1500);
+      if (payload.url) {
+        window.location.href = payload.url;
+      }
     } else if (payload.action === 'incoming_text') {
       showIncomingText(payload.text, payload.title, payload.time);
     } else if (payload.action === 'text_ack') {
@@ -1030,7 +1046,7 @@
       renderShelfList(payload.items);
     } else if (payload.action === 'file_too_large') {
       const btn = document.getElementById('btn_dl_' + payload.fileId);
-      if (btn) btn.textContent = '⚡ Gigabit LAN';
+      if (btn) btn.textContent = 'Save';
       completeItemProgress(payload.fileId, false);
       alert(`⚡ Large File (${formatBytes(payload.size)})\n\n${payload.message}`);
     } else if (payload.action === 'file_ack') {
