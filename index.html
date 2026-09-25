@@ -310,6 +310,11 @@
     align-items: center;
     justify-content: center;
     font-size: 18px;
+    position: relative;
+  }
+  .progress-ring-svg {
+    display: block;
+    overflow: visible;
   }
   .item-details {
     overflow: hidden;
@@ -414,7 +419,7 @@
   <div id="viewSend" class="card">
     <div class="card-title">📁 Drop Files, Photos or Videos</div>
     <label class="upload-box" for="fileInput">
-      <div class="upload-icon">📷</div>
+      <div class="upload-icon" id="uploadIcon" data-original-icon="📷">📷</div>
       <div class="upload-primary">Tap to Pick or Take Photo</div>
       <div class="upload-secondary">Gallery, Files, Documents, or Camera</div>
       <input type="file" id="fileInput" multiple onchange="uploadFilesCloud(this.files)">
@@ -714,6 +719,7 @@
 
         const overallPercent = Math.round(((cIdx + 1) / totalChunks) * 100);
         progFill.style.width = overallPercent + '%';
+        setUploadProgress(overallPercent);
         if (statusText) {
           statusText.textContent = `Sending ${file.name} (${overallPercent}%)...`;
         }
@@ -835,9 +841,9 @@
       }
 
       html += `
-        <div class="shelf-item-card">
+        <div class="shelf-item-card" id="shelf_card_${item.Id}">
           <div class="item-left">
-            <div class="item-icon-box">${icon}</div>
+            <div class="item-icon-box" id="icon_box_${item.Id}" data-original-icon="${escapeHtml(icon)}">${icon}</div>
             <div class="item-details">
               <div class="item-title">${pinBadge}${escapeHtml(item.Title || 'Untitled')}</div>
               <div class="item-subtitle">${escapeHtml(subtitle)}</div>
@@ -850,6 +856,106 @@
     list.innerHTML = html;
   }
 
+  function setItemProgress(itemId, percent) {
+    const iconBox = document.getElementById('icon_box_' + itemId);
+    if (!iconBox) return;
+
+    let fg = document.getElementById('ring_fg_' + itemId);
+    let txt = document.getElementById('ring_txt_' + itemId);
+
+    if (!fg) {
+      iconBox.innerHTML = `
+        <svg class="progress-ring-svg" width="30" height="30" viewBox="0 0 36 36">
+          <circle cx="18" cy="18" r="14.5" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="3.2"/>
+          <circle id="ring_fg_${itemId}" cx="18" cy="18" r="14.5" fill="none" stroke="#38bdf8" stroke-width="3.2"
+                  pathLength="100" stroke-dasharray="0 100" stroke-linecap="round"
+                  transform="rotate(-90 18 18)" style="transition: stroke-dasharray 0.15s ease;"/>
+          <text id="ring_txt_${itemId}" x="18" y="21" text-anchor="middle" fill="#38bdf8" font-size="8.5" font-weight="700">0%</text>
+        </svg>
+      `;
+      fg = document.getElementById('ring_fg_' + itemId);
+      txt = document.getElementById('ring_txt_' + itemId);
+    }
+
+    const p = Math.max(0, Math.min(100, Math.round(percent)));
+    if (fg) fg.setAttribute('stroke-dasharray', `${p} 100`);
+    if (txt) txt.textContent = `${p}%`;
+  }
+
+  function completeItemProgress(itemId, success = true) {
+    const iconBox = document.getElementById('icon_box_' + itemId);
+    if (!iconBox) return;
+
+    const fg = document.getElementById('ring_fg_' + itemId);
+    const txt = document.getElementById('ring_txt_' + itemId);
+
+    if (success) {
+      if (fg) {
+        fg.setAttribute('stroke-dasharray', '100 100');
+        fg.setAttribute('stroke', '#4ade80');
+      }
+      if (txt) {
+        txt.textContent = '✓';
+        txt.setAttribute('fill', '#4ade80');
+      }
+    }
+
+    setTimeout(() => {
+      const orig = iconBox.getAttribute('data-original-icon');
+      if (orig) iconBox.innerHTML = orig;
+    }, 1200);
+  }
+
+  function setUploadProgress(percent) {
+    const uploadIcon = document.getElementById('uploadIcon');
+    if (!uploadIcon) return;
+
+    let fg = document.getElementById('upload_ring_fg');
+    let txt = document.getElementById('upload_ring_txt');
+
+    if (!fg) {
+      uploadIcon.innerHTML = `
+        <svg class="progress-ring-svg" width="38" height="38" viewBox="0 0 36 36">
+          <circle cx="18" cy="18" r="14.5" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="3.2"/>
+          <circle id="upload_ring_fg" cx="18" cy="18" r="14.5" fill="none" stroke="#38bdf8" stroke-width="3.2"
+                  pathLength="100" stroke-dasharray="0 100" stroke-linecap="round"
+                  transform="rotate(-90 18 18)" style="transition: stroke-dasharray 0.15s ease;"/>
+          <text id="upload_ring_txt" x="18" y="21" text-anchor="middle" fill="#38bdf8" font-size="8.5" font-weight="700">0%</text>
+        </svg>
+      `;
+      fg = document.getElementById('upload_ring_fg');
+      txt = document.getElementById('upload_ring_txt');
+    }
+
+    const p = Math.max(0, Math.min(100, Math.round(percent)));
+    if (fg) fg.setAttribute('stroke-dasharray', `${p} 100`);
+    if (txt) txt.textContent = `${p}%`;
+  }
+
+  function completeUploadProgress(success = true) {
+    const uploadIcon = document.getElementById('uploadIcon');
+    if (!uploadIcon) return;
+
+    const fg = document.getElementById('upload_ring_fg');
+    const txt = document.getElementById('upload_ring_txt');
+
+    if (success) {
+      if (fg) {
+        fg.setAttribute('stroke-dasharray', '100 100');
+        fg.setAttribute('stroke', '#4ade80');
+      }
+      if (txt) {
+        txt.textContent = '✓';
+        txt.setAttribute('fill', '#4ade80');
+      }
+    }
+
+    setTimeout(() => {
+      const orig = uploadIcon.getAttribute('data-original-icon') || '📷';
+      uploadIcon.innerHTML = orig;
+    }, 1200);
+  }
+
   function triggerDownload(itemId, fileSize, lanUrl) {
     const lanIp = localStorage.getItem('droplet_lan_ip');
     const isLarge = fileSize && fileSize > 35 * 1024 * 1024;
@@ -857,7 +963,9 @@
     if (isLarge) {
       const targetUrl = lanUrl || (lanIp ? `http://${lanIp}/download?id=${itemId}` : '');
       if (targetUrl) {
+        setItemProgress(itemId, 50);
         window.open(targetUrl, '_blank');
+        setTimeout(() => completeItemProgress(itemId, true), 3000);
         return;
       }
       alert(`⚡ Large File (${formatBytes(fileSize)})\n\nThis video is ${formatBytes(fileSize)}. Over mobile cellular data, cloud relay is limited to 35 MB.\n\nConnect to your Home Wi-Fi to download this file directly at Gigabit speed (150 MB/s).`);
@@ -870,6 +978,7 @@
   function requestCloudDownload(itemId) {
     const btn = document.getElementById('btn_dl_' + itemId);
     if (btn) btn.textContent = 'Fetching...';
+    setItemProgress(itemId, 2);
     if (isAnyBrokerConnected()) {
       broadcastToMqtt('droplet/v1/' + deviceId + '/to-pc', JSON.stringify({
         action: 'get_file',
@@ -922,8 +1031,10 @@
     } else if (payload.action === 'file_too_large') {
       const btn = document.getElementById('btn_dl_' + payload.fileId);
       if (btn) btn.textContent = '⚡ Gigabit LAN';
+      completeItemProgress(payload.fileId, false);
       alert(`⚡ Large File (${formatBytes(payload.size)})\n\n${payload.message}`);
     } else if (payload.action === 'file_ack') {
+      completeUploadProgress(true);
       const progBar = document.getElementById('uploadProgress');
       const progFill = document.getElementById('progressFill');
       const toast = document.getElementById('uploadToast');
@@ -952,11 +1063,12 @@
       const t = incomingDownTransfers[fileId];
       t.chunks[index] = data;
 
+      const pct = Math.round(((index + 1) / total) * 100);
       const btn = document.getElementById('btn_dl_' + fileId);
       if (btn) {
-        const pct = Math.round(((index + 1) / total) * 100);
         btn.textContent = `${pct}%`;
       }
+      setItemProgress(fileId, pct);
 
       let receivedCount = 0;
       for (let i = 0; i < total; i++) {
@@ -965,7 +1077,9 @@
 
       if (receivedCount === total) {
         delete incomingDownTransfers[fileId];
-        if (btn) btn.textContent = 'Save';
+        completeItemProgress(fileId, true);
+        if (btn) btn.textContent = 'Saved';
+        setTimeout(() => { if (btn) btn.textContent = 'Save'; }, 1500);
 
         const byteArrays = [];
         for (let i = 0; i < total; i++) {
@@ -989,6 +1103,8 @@
         setTimeout(() => URL.revokeObjectURL(url), 10000);
       }
     } else if (payload.action === 'file_data') {
+      setItemProgress(payload.id, 100);
+      completeItemProgress(payload.id, true);
       const b64 = payload.data;
       const mime = payload.mime || 'application/octet-stream';
       const byteCharacters = atob(b64);
