@@ -351,7 +351,7 @@
       </div>
       <div>
         <div class="header-title">Droplet Bridge</div>
-        <div class="device-badge" id="deviceBadge">Pairing...</div>
+        <div class="device-badge" id="deviceBadge" onclick="promptChangeId()" style="cursor: pointer; text-decoration: underline;" title="Tap to change PC ID">Pairing...</div>
       </div>
     </div>
     <div class="status-badge" id="statusBadge">
@@ -368,6 +368,19 @@
   <!-- Local Wi-Fi Gigabit Speed Banner -->
   <div class="pwa-banner" id="lanBanner" style="display: none; background: rgba(34, 197, 94, 0.12); border-color: rgba(34, 197, 94, 0.3);">
     <div>⚡ <b>On Home Wi-Fi?</b> <a id="lanLink" href="#" style="color: #4ade80; text-decoration: underline; font-weight: 600;">Tap for Gigabit Speed (150 MB/s)</a></div>
+  </div>
+
+  <!-- Incoming Note from PC Banner Card -->
+  <div id="incomingCard" class="card" style="display: none; border: 1px solid #38bdf8; background: rgba(14, 165, 233, 0.18); box-shadow: 0 4px 20px rgba(56, 189, 248, 0.25);">
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+      <span style="font-weight: 700; color: #38bdf8; font-size: 13.5px;">📥 Note from PC</span>
+      <span style="font-size: 11px; color: #94a3b8;" id="incomingTime">Just now</span>
+    </div>
+    <div id="incomingContent" style="margin: 10px 0; font-size: 14px; color: #f8fafc; word-break: break-word; white-space: pre-wrap; background: rgba(0, 0, 0, 0.35); padding: 12px; border-radius: 10px; user-select: all;"></div>
+    <div style="display: flex; gap: 8px;">
+      <button class="btn-action" style="flex: 1; padding: 9px; font-weight: 600; font-size: 12.5px;" onclick="copyIncoming()">📋 Copy Note</button>
+      <button class="btn-action" style="padding: 9px 14px; background: rgba(255, 255, 255, 0.12);" onclick="document.getElementById('incomingCard').style.display='none'">✕</button>
+    </div>
   </div>
 
   <!-- Segmented Navigation -->
@@ -445,14 +458,9 @@
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
 
-  initMqttConnection();
-
-  function updateStatus(connected, text) {
-    const badge = document.getElementById('statusBadge');
-    const txt = document.getElementById('statusText');
-    badge.className = 'status-badge ' + (connected ? 'connected' : '');
-    txt.textContent = text;
-  }
+  let isPcOnline = false;
+  let lastPongTime = 0;
+  let pingInterval = null;
 
   function initMqttConnection() {
     updateStatus(false, 'Connecting...');
@@ -470,7 +478,15 @@
       mqttClient.on('connect', () => {
         isMqttConnected = true;
         mqttClient.subscribe('droplet/v1/' + deviceId + '/to-phone');
-        updateStatus(true, '🟢 Connected');
+        if (deviceId !== 'drop-8c0db5') mqttClient.subscribe('droplet/v1/drop-8c0db5/to-phone');
+        mqttClient.subscribe('droplet/v1/beniwalrubal11/to-phone');
+
+        // Immediately ping PC and request shelf
+        sendPing();
+        setTimeout(sendPing, 1000);
+
+        if (pingInterval) clearInterval(pingInterval);
+        pingInterval = setInterval(sendPing, 4000);
       });
 
       mqttClient.on('message', (topic, message) => {
@@ -482,11 +498,27 @@
 
       mqttClient.on('offline', () => {
         isMqttConnected = false;
+        isPcOnline = false;
         updateStatus(false, 'Reconnecting...');
       });
     } catch(err) {
       updateStatus(false, 'Connection error');
     }
+  }
+
+  function sendPing() {
+    if (!mqttClient || !isMqttConnected) return;
+    mqttClient.publish('droplet/v1/' + deviceId + '/to-pc', JSON.stringify({ action: 'ping' }));
+    if (deviceId !== 'drop-8c0db5') {
+      mqttClient.publish('droplet/v1/drop-8c0db5/to-pc', JSON.stringify({ action: 'ping' }));
+    }
+
+    setTimeout(() => {
+      if (Date.now() - lastPongTime > 6000) {
+        isPcOnline = false;
+        updateStatus(false, `🟠 PC Waiting (${deviceId})`);
+      }
+    }, 2500);
   }
 
   function switchTab(tab) {
@@ -605,6 +637,9 @@
     list.innerHTML = '<div class="empty-shelf">Loading PC shelf...</div>';
     if (mqttClient && isMqttConnected) {
       mqttClient.publish('droplet/v1/' + deviceId + '/to-pc', JSON.stringify({ action: 'get_shelf' }));
+      if (deviceId !== 'drop-8c0db5') {
+        mqttClient.publish('droplet/v1/drop-8c0db5/to-pc', JSON.stringify({ action: 'get_shelf' }));
+      }
     } else {
       list.innerHTML = '<div class="empty-shelf">Connecting to PC...</div>';
     }
@@ -662,7 +697,26 @@
   const incomingDownTransfers = {};
 
   function handleRelayMessage(payload) {
-    if (payload.action === 'shelf_data') {
+    if (payload.action === 'pong') {
+      lastPongTime = Date.now();
+      isPcOnline = true;
+      const pcName = payload.name ? ` (${payload.name})` : '';
+      updateStatus(true, `🟢 PC Online${pcName}`);
+
+      if (payload.deviceId && payload.deviceId !== deviceId) {
+        deviceId = payload.deviceId;
+        localStorage.setItem('droplet_device_id', deviceId);
+        document.getElementById('deviceBadge').textContent = 'ID: ' + deviceId;
+        mqttClient.subscribe('droplet/v1/' + deviceId + '/to-phone');
+      }
+    } else if (payload.action === 'incoming_text') {
+      showIncomingText(payload.text, payload.title, payload.time);
+    } else if (payload.action === 'text_ack') {
+      const toast = document.getElementById('uploadToast');
+      toast.textContent = '✓ Note saved on PC Shelf!';
+      toast.style.display = 'block';
+      setTimeout(() => toast.style.display = 'none', 3000);
+    } else if (payload.action === 'shelf_data') {
       renderShelfList(payload.items);
     } else if (payload.action === 'file_ack') {
       const progBar = document.getElementById('uploadProgress');
@@ -750,6 +804,46 @@
 
       const btn = document.getElementById('btn_dl_' + payload.id);
       if (btn) btn.textContent = 'Save';
+    }
+  let currentIncomingText = '';
+  function showIncomingText(text, title, time) {
+    currentIncomingText = text || '';
+    const card = document.getElementById('incomingCard');
+    const content = document.getElementById('incomingContent');
+    const timeEl = document.getElementById('incomingTime');
+    if (card && content) {
+      content.textContent = currentIncomingText;
+      if (timeEl) timeEl.textContent = time || 'Just now';
+      card.style.display = 'block';
+
+      try { if (navigator.vibrate) navigator.vibrate([100, 50, 100]); } catch(e) {}
+
+      try {
+        navigator.clipboard.writeText(currentIncomingText).then(() => {
+          const toast = document.getElementById('uploadToast');
+          toast.textContent = '✓ Copied Note from PC to Clipboard!';
+          toast.style.display = 'block';
+          setTimeout(() => toast.style.display = 'none', 3500);
+        }).catch(() => {});
+      } catch(e) {}
+    }
+  }
+
+  function copyIncoming() {
+    if (!currentIncomingText) return;
+    navigator.clipboard.writeText(currentIncomingText).then(() => {
+      alert('✓ Copied to clipboard!');
+    }).catch(() => {
+      prompt('Copy note:', currentIncomingText);
+    });
+  }
+
+  function promptChangeId() {
+    const entered = prompt('Your PC Device ID (found in Droplet Bridge QR modal on PC):', deviceId);
+    if (entered && entered.trim() && entered.trim() !== deviceId) {
+      deviceId = entered.trim();
+      localStorage.setItem('droplet_device_id', deviceId);
+      location.href = window.location.pathname + '?id=' + encodeURIComponent(deviceId);
     }
   }
 
